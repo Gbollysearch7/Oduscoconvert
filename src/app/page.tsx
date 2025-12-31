@@ -93,6 +93,7 @@ export default function Home() {
                   progress={progress}
                   currentStep={currentStep}
                   fileName={fileName}
+                  outputFormat={outputFormat}
                 />
               )}
 

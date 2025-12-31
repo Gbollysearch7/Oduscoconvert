@@ -43,15 +43,19 @@ export function usePdfConversion() {
         const arrayBuffer = await file.arrayBuffer();
         setArrayBufferCache(arrayBuffer);
 
+        // Clone ArrayBuffer for each PDF.js operation to avoid detached buffer errors
+        // PDF.js can transfer ownership of the buffer, making it unusable for subsequent operations
+        const cloneBuffer = (buffer: ArrayBuffer) => buffer.slice(0);
+
         // Parse PDF
         setState((prev) => ({ ...prev, status: 'parsing' }));
-        const textItems = await parsePdf(arrayBuffer, updateProgress);
+        const textItems = await parsePdf(cloneBuffer(arrayBuffer), updateProgress);
 
         // Extract document structure for DOC conversion
         let documentStructure = undefined;
         if (outputFormat === 'doc') {
           updateProgress(50, 'Analyzing document structure...');
-          documentStructure = await extractDocumentStructure(arrayBuffer, updateProgress);
+          documentStructure = await extractDocumentStructure(cloneBuffer(arrayBuffer), updateProgress);
         }
 
         // Determine extraction mode
@@ -61,7 +65,7 @@ export function usePdfConversion() {
         if (mode === 'text') {
           // Force text extraction
           updateProgress(55, 'Extracting text content...');
-          const textContent = await extractTextByPage(arrayBuffer, updateProgress);
+          const textContent = await extractTextByPage(cloneBuffer(arrayBuffer), updateProgress);
           result = { tables: [], textContent, mode: 'text', documentStructure };
         } else {
           // Try table extraction first
@@ -72,7 +76,7 @@ export function usePdfConversion() {
           } else {
             // Fallback to text extraction for auto mode
             updateProgress(70, 'No tables found, extracting text...');
-            const textContent = await extractTextByPage(arrayBuffer, updateProgress);
+            const textContent = await extractTextByPage(cloneBuffer(arrayBuffer), updateProgress);
             result = { tables: [], textContent, mode: 'text', documentStructure };
           }
         }

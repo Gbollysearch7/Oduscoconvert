@@ -14,6 +14,7 @@ interface Row {
 interface TableMetadata {
   hasDetectedHeader: boolean;
   columnTypes: ('text' | 'number' | 'currency' | 'date' | 'mixed')[];
+  columnCurrencySymbols: (string | null)[]; // Currency symbol for each column (null if not currency or no symbol detected)
   totalRows: number;
   totalCols: number;
 }
@@ -259,6 +260,33 @@ function isHeaderLike(text: string): boolean {
   return false;
 }
 
+// Detect the currency symbol used in values (if any)
+export function detectCurrencySymbol(values: string[]): string | null {
+  const currencyPatterns = [
+    { symbol: '₦', pattern: /₦/ },
+    { symbol: 'NGN', pattern: /NGN/i },
+    { symbol: '$', pattern: /\$/ },
+    { symbol: 'USD', pattern: /USD/i },
+    { symbol: '€', pattern: /€/ },
+    { symbol: 'EUR', pattern: /EUR/i },
+    { symbol: '£', pattern: /£/ },
+    { symbol: 'GBP', pattern: /GBP/i },
+  ];
+
+  for (const { symbol, pattern } of currencyPatterns) {
+    const matchCount = values.filter(v => pattern.test(v)).length;
+    if (matchCount > 0) {
+      // Normalize NGN to ₦ symbol
+      if (symbol === 'NGN') return '₦';
+      if (symbol === 'USD') return '$';
+      if (symbol === 'EUR') return '€';
+      if (symbol === 'GBP') return '£';
+      return symbol;
+    }
+  }
+  return null;
+}
+
 function detectColumnType(values: string[]): 'text' | 'number' | 'currency' | 'date' | 'mixed' {
   const nonEmpty = values.filter((v) => v.trim());
   if (nonEmpty.length === 0) return 'text';
@@ -268,8 +296,12 @@ function detectColumnType(values: string[]): 'text' | 'number' | 'currency' | 'd
   let dateCount = 0;
   let textCount = 0;
 
+  // Expanded currency pattern to include Naira (₦), Euro (€), Pound (£), and currency codes
+  const currencyPattern = /^[₦$€£][\d,]+\.?\d*$|^[\d,]+\.?\d*\s*[₦$€£]?$|^[\d,]+\.?\d*\s*(?:USD|EUR|GBP|NGN|NAIRA)?$/i;
+
   nonEmpty.forEach((value) => {
-    if (/^\$[\d,]+\.?\d*$|^[\d,]+\.?\d*\s*(?:USD|EUR|GBP|NGN)?$/i.test(value)) {
+    // Check for currency symbols first (₦, $, €, £) or currency codes
+    if (currencyPattern.test(value) && /[₦$€£]|NGN|USD|EUR|GBP|NAIRA/i.test(value)) {
       currencyCount++;
     } else if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$|^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}$/.test(value)) {
       dateCount++;
@@ -295,15 +327,25 @@ function analyzeTableMetadata(rows: string[][], hasHeader: boolean): TableMetada
   const numCols = Math.max(...rows.map((r) => r.length));
 
   const columnTypes: ('text' | 'number' | 'currency' | 'date' | 'mixed')[] = [];
+  const columnCurrencySymbols: (string | null)[] = [];
 
   for (let col = 0; col < numCols; col++) {
     const columnValues = dataRows.map((row) => row[col] || '');
-    columnTypes.push(detectColumnType(columnValues));
+    const colType = detectColumnType(columnValues);
+    columnTypes.push(colType);
+
+    // Detect currency symbol for currency columns
+    if (colType === 'currency') {
+      columnCurrencySymbols.push(detectCurrencySymbol(columnValues));
+    } else {
+      columnCurrencySymbols.push(null);
+    }
   }
 
   return {
     hasDetectedHeader: hasHeader,
     columnTypes,
+    columnCurrencySymbols,
     totalRows: rows.length,
     totalCols: numCols,
   };

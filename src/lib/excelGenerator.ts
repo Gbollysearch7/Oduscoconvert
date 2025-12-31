@@ -27,9 +27,9 @@ const COLORS = {
   textHeaderBg: '0D47A1',        // Dark blue for text mode
   pageColumnBg: 'E3F2FD',        // Light blue for page column
 
-  // Metadata/info rows
-  metaBg: 'FFF8E1',              // Light amber
-  metaText: '5D4037',            // Brown text
+  // Title/info rows
+  titleBg: '1E3A5F',             // Dark navy for title
+  titleText: 'FFFFFF',           // White text for title
 
   // Totals row
   totalsBg: 'E8EAF6',            // Light indigo
@@ -37,6 +37,28 @@ const COLORS = {
 };
 
 // Style factory functions
+function createTitleStyle() {
+  return {
+    font: {
+      bold: true,
+      color: { rgb: COLORS.titleText },
+      sz: 14,
+      name: 'Calibri'
+    },
+    fill: {
+      fgColor: { rgb: COLORS.titleBg },
+      patternType: 'solid'
+    },
+    alignment: {
+      horizontal: 'left',
+      vertical: 'center',
+    },
+    border: {
+      bottom: { style: 'medium', color: { rgb: COLORS.headerBorder } },
+    },
+  };
+}
+
 function createHeaderStyle(columnType?: string) {
   const accentColor = columnType === 'number' ? COLORS.numberAccent
     : columnType === 'currency' ? COLORS.currencyAccent
@@ -98,28 +120,6 @@ function createDataCellStyle(isEven: boolean, columnType?: string) {
       bottom: { style: 'thin', color: { rgb: COLORS.borderLight } },
       left: { style: 'thin', color: { rgb: COLORS.borderLight } },
       right: { style: 'thin', color: { rgb: COLORS.borderLight } },
-    },
-  };
-}
-
-function createMetaInfoStyle() {
-  return {
-    font: {
-      italic: true,
-      sz: 9,
-      color: { rgb: COLORS.metaText },
-      name: 'Calibri'
-    },
-    fill: {
-      fgColor: { rgb: COLORS.metaBg },
-      patternType: 'solid'
-    },
-    alignment: {
-      horizontal: 'left',
-      vertical: 'center'
-    },
-    border: {
-      bottom: { style: 'thin', color: { rgb: COLORS.borderLight } },
     },
   };
 }
@@ -216,65 +216,107 @@ export function generateExcel(
       const enhancedTable = table as EnhancedExtractedTable;
       const hasMetadata = 'metadata' in enhancedTable;
       const metadata = hasMetadata ? enhancedTable.metadata : null;
+      const hasHeader = metadata?.hasDetectedHeader ?? false;
 
-      // Build sheet data with metadata row
-      const sheetData: string[][] = [];
+      // Get the number of columns from the data
+      const numCols = Math.max(...table.rows.map(r => r.length));
 
-      // Add source info row at top
-      sheetData.push([`Source: ${table.source}`]);
+      // Build sheet data - title row spans all columns, then table data starts fresh
+      const sheetData: (string | number)[][] = [];
 
-      // Add empty row for spacing
-      sheetData.push([]);
+      // Row 0: Title row - put title in first cell, empty strings in rest for proper merge
+      const titleRow: string[] = [table.source];
+      for (let i = 1; i < numCols; i++) {
+        titleRow.push('');
+      }
+      sheetData.push(titleRow);
 
-      // Add table data
-      table.rows.forEach((row) => sheetData.push(row));
+      // Row 1: Empty spacing row
+      const emptyRow: string[] = [];
+      for (let i = 0; i < numCols; i++) {
+        emptyRow.push('');
+      }
+      sheetData.push(emptyRow);
+
+      // Add table data starting from row 2
+      table.rows.forEach((row) => {
+        // Ensure each row has the same number of columns
+        const normalizedRow = [...row];
+        while (normalizedRow.length < numCols) {
+          normalizedRow.push('');
+        }
+        sheetData.push(normalizedRow);
+      });
 
       const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
       const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
 
-      // Style the metadata row (row 0)
-      for (let col = range.s.c; col <= range.e.c; col++) {
-        const cellRef = XLSX.utils.encode_cell({ r: 0, c: col });
-        if (worksheet[cellRef]) {
-          worksheet[cellRef].s = createMetaInfoStyle();
-        }
+      // Initialize merges array
+      const merges: XLSX.Range[] = [];
+
+      // Merge title row across all columns (row 0, columns 0 to numCols-1)
+      if (numCols > 1) {
+        merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: numCols - 1 } });
       }
 
-      // Merge metadata row across all columns
-      if (range.e.c > 0) {
-        worksheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: range.e.c } }];
+      // Apply title style to the merged cell
+      const titleCellRef = XLSX.utils.encode_cell({ r: 0, c: 0 });
+      if (worksheet[titleCellRef]) {
+        worksheet[titleCellRef].s = createTitleStyle();
       }
 
-      // Style data rows (starting from row 2, which is index 2 in sheetData)
+      // Style data rows (starting from row 2)
       const dataStartRow = 2;
-      const hasHeader = metadata?.hasDetectedHeader ?? false;
 
       for (let row = dataStartRow; row <= range.e.r; row++) {
         const dataRowIndex = row - dataStartRow;
         const isHeaderRow = dataRowIndex === 0 && hasHeader;
         const isEvenDataRow = (dataRowIndex - (hasHeader ? 1 : 0)) % 2 === 0;
 
-        for (let col = range.s.c; col <= range.e.c; col++) {
+        for (let col = 0; col < numCols; col++) {
           const cellRef = XLSX.utils.encode_cell({ r: row, c: col });
-          const cell = worksheet[cellRef];
+          let cell = worksheet[cellRef];
 
-          if (cell) {
-            const columnType = metadata?.columnTypes?.[col];
+          // Create cell if it doesn't exist
+          if (!cell) {
+            worksheet[cellRef] = { v: '', t: 's' };
+            cell = worksheet[cellRef];
+          }
 
-            if (isHeaderRow) {
-              cell.s = createHeaderStyle(columnType);
-            } else {
-              cell.s = createDataCellStyle(isEvenDataRow, columnType);
+          const columnType = metadata?.columnTypes?.[col];
 
-              // Format numbers and currency
-              if (columnType === 'currency' || columnType === 'number') {
-                const value = cell.v;
-                if (typeof value === 'string') {
-                  const numValue = parseFloat(value.replace(/[$,\s]/g, ''));
-                  if (!isNaN(numValue)) {
-                    cell.v = numValue;
-                    cell.t = 'n';
-                    cell.z = columnType === 'currency' ? '$#,##0.00' : '#,##0.00';
+          if (isHeaderRow) {
+            cell.s = createHeaderStyle(columnType);
+          } else {
+            cell.s = createDataCellStyle(isEvenDataRow, columnType);
+
+            // Format numbers and currency
+            if (columnType === 'currency' || columnType === 'number') {
+              const value = cell.v;
+              if (typeof value === 'string' && value.trim()) {
+                // Remove all currency symbols and formatting to get the numeric value
+                const numValue = parseFloat(value.replace(/[₦$€£,\s]/g, ''));
+                if (!isNaN(numValue)) {
+                  cell.v = numValue;
+                  cell.t = 'n';
+
+                  // Use the detected currency symbol, or no symbol if none was detected
+                  if (columnType === 'currency') {
+                    const currencySymbol = metadata?.columnCurrencySymbols?.[col];
+                    if (currencySymbol === '₦') {
+                      cell.z = '₦#,##0.00'; // Naira format
+                    } else if (currencySymbol === '€') {
+                      cell.z = '€#,##0.00'; // Euro format
+                    } else if (currencySymbol === '£') {
+                      cell.z = '£#,##0.00'; // Pound format
+                    } else if (currencySymbol === '$') {
+                      cell.z = '$#,##0.00'; // Dollar format
+                    } else {
+                      // No currency symbol detected - just format as number (preserve original value appearance)
+                      cell.z = '#,##0.00';
+                    }
+                  } else {
+                    cell.z = '#,##0.00';
                   }
                 }
               }
@@ -283,7 +325,10 @@ export function generateExcel(
         }
       }
 
-      // Calculate and set column widths
+      // Apply merges
+      worksheet['!merges'] = merges;
+
+      // Calculate and set column widths based on actual data (not title)
       const colWidths = calculateColumnWidths(table.rows);
       worksheet['!cols'] = colWidths.map((w) => ({
         wch: Math.min(Math.max(w + 4, 10), 50)
@@ -291,10 +336,10 @@ export function generateExcel(
 
       // Set row heights
       const rowHeights: XLSX.RowInfo[] = [];
-      rowHeights[0] = { hpt: 18 };  // Metadata row
-      rowHeights[1] = { hpt: 8 };   // Spacing row
+      rowHeights[0] = { hpt: 24 };  // Title row
+      rowHeights[1] = { hpt: 6 };   // Spacing row (smaller)
       if (hasHeader) {
-        rowHeights[2] = { hpt: 28 }; // Header row
+        rowHeights[2] = { hpt: 26 }; // Header row
       }
       worksheet['!rows'] = rowHeights;
 
@@ -373,8 +418,8 @@ export function generateExcel(
 
 function addSummarySheet(workbook: XLSX.WorkBook, tables: ConversionResult['tables']) {
   const summaryData: (string | number)[][] = [
-    ['Extraction Summary'],
-    [],
+    ['Extraction Summary', '', '', ''],
+    ['', '', '', ''],
     ['Table #', 'Source', 'Rows', 'Columns'],
   ];
 
@@ -390,23 +435,19 @@ function addSummarySheet(workbook: XLSX.WorkBook, tables: ConversionResult['tabl
 
   // Add total row
   const totalRows = tables.reduce((sum, t) => sum + t.rows.length, 0);
-  summaryData.push([]);
+  summaryData.push(['', '', '', '']);
   summaryData.push(['Total', '', totalRows, '']);
 
   const worksheet = XLSX.utils.aoa_to_sheet(summaryData);
   const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
 
-  // Style title
+  // Merge and style title
+  worksheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }];
+
   const titleCell = worksheet['A1'];
   if (titleCell) {
-    titleCell.s = {
-      font: { bold: true, sz: 14, color: { rgb: COLORS.headerBg } },
-      alignment: { horizontal: 'left' },
-    };
+    titleCell.s = createTitleStyle();
   }
-
-  // Merge title row
-  worksheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }];
 
   // Style header row (row 2)
   for (let col = 0; col <= 3; col++) {
@@ -450,6 +491,13 @@ function addSummarySheet(workbook: XLSX.WorkBook, tables: ConversionResult['tabl
     { wch: 25 },
     { wch: 10 },
     { wch: 10 },
+  ];
+
+  // Set row heights
+  worksheet['!rows'] = [
+    { hpt: 24 },  // Title row
+    { hpt: 6 },   // Spacing row
+    { hpt: 26 },  // Header row
   ];
 
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Summary');

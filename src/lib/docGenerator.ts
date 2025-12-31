@@ -214,9 +214,10 @@ export async function generateDocFromResult(
     });
   }
 
-  // If we have document structure, use it for better formatting
-  if (result.documentStructure) {
-    // Clear and rebuild with proper structure
+  // If we have document structure AND no tables, use structure for better formatting
+  // (Tables are already added above, so only use structure for text-mode documents)
+  if (result.documentStructure && result.mode !== 'tables') {
+    // Clear and rebuild with proper structure for text documents
     children.length = 0;
 
     if (result.documentStructure.title) {
