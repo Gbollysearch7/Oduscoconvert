@@ -11,7 +11,7 @@ import {
   BorderStyle,
   convertInchesToTwip,
   Packer,
-  PageBreak,
+  ImageRun,
 } from 'docx';
 import type { DocumentStructure, DocumentElement, ConversionResult } from './types';
 import type { EnhancedExtractedTable } from './tableExtractor';
@@ -57,7 +57,7 @@ export async function generateDocFromStructure(
 ): Promise<Blob> {
   onProgress?.(80, 'Creating Word document...');
 
-  const children: Paragraph[] = [];
+  const children: (Paragraph | Table)[] = [];
 
   // Add document title if present
   if (structure.title) {
@@ -65,17 +65,36 @@ export async function generateDocFromStructure(
   }
 
   // Process each element
-  structure.elements.forEach((element, index) => {
+  for (let index = 0; index < structure.elements.length; index++) {
+    const element = structure.elements[index];
     const progress = 80 + Math.floor((index / structure.elements.length) * 15);
     if (index % 20 === 0) {
       onProgress?.(progress, 'Formatting document...');
     }
 
-    const paragraph = elementToParagraph(element);
-    if (paragraph) {
-      children.push(paragraph);
+    // Handle different element types
+    if (element.type === 'table' && element.tableData) {
+      // Add table element
+      const table = createTableFromData(element.tableData.rows, element.tableData.hasHeader);
+      children.push(table);
+      // Add spacing after table
+      children.push(new Paragraph({
+        children: [],
+        spacing: { after: SPACING.afterParagraph * 2 },
+      }));
+    } else if (element.type === 'image' && element.imageData) {
+      // Add image element
+      const imageParagraph = await createImageParagraph(element.imageData);
+      if (imageParagraph) {
+        children.push(imageParagraph);
+      }
+    } else {
+      const paragraph = elementToParagraph(element);
+      if (paragraph) {
+        children.push(paragraph);
+      }
     }
-  });
+  }
 
   const doc = new Document({
     styles: {
@@ -168,7 +187,7 @@ export async function generateDocFromResult(
     // Add text content with page markers
     let currentPage = 0;
 
-    result.textContent.forEach((item, index) => {
+    result.textContent.forEach((item) => {
       // Add page break marker when page changes
       if (item.page !== currentPage) {
         currentPage = item.page;
@@ -224,12 +243,26 @@ export async function generateDocFromResult(
       children.push(createTitleParagraph(result.documentStructure.title));
     }
 
-    result.documentStructure.elements.forEach((element) => {
-      const paragraph = elementToParagraph(element);
-      if (paragraph) {
-        children.push(paragraph);
+    for (const element of result.documentStructure.elements) {
+      if (element.type === 'table' && element.tableData) {
+        const table = createTableFromData(element.tableData.rows, element.tableData.hasHeader);
+        children.push(table);
+        children.push(new Paragraph({
+          children: [],
+          spacing: { after: SPACING.afterParagraph * 2 },
+        }));
+      } else if (element.type === 'image' && element.imageData) {
+        const imageParagraph = await createImageParagraph(element.imageData);
+        if (imageParagraph) {
+          children.push(imageParagraph);
+        }
+      } else {
+        const paragraph = elementToParagraph(element);
+        if (paragraph) {
+          children.push(paragraph);
+        }
       }
-    });
+    }
   }
 
   const doc = new Document({
@@ -301,6 +334,16 @@ function elementToParagraph(element: DocumentElement): Paragraph | null {
     return null;
   }
 
+  // Map alignment
+  const getAlignment = (): typeof AlignmentType[keyof typeof AlignmentType] => {
+    switch (element.alignment) {
+      case 'center': return AlignmentType.CENTER;
+      case 'right': return AlignmentType.RIGHT;
+      case 'justify': return AlignmentType.JUSTIFIED;
+      default: return AlignmentType.LEFT;
+    }
+  };
+
   switch (element.type) {
     case 'title':
       return new Paragraph({
@@ -314,7 +357,7 @@ function elementToParagraph(element: DocumentElement): Paragraph | null {
           }),
         ],
         heading: HeadingLevel.TITLE,
-        alignment: element.alignment === 'center' ? AlignmentType.CENTER : AlignmentType.LEFT,
+        alignment: getAlignment(),
         spacing: {
           before: SPACING.beforeTitle,
           after: SPACING.afterTitle,
@@ -333,7 +376,7 @@ function elementToParagraph(element: DocumentElement): Paragraph | null {
           }),
         ],
         heading: HeadingLevel.HEADING_1,
-        alignment: element.alignment === 'center' ? AlignmentType.CENTER : AlignmentType.LEFT,
+        alignment: getAlignment(),
         spacing: {
           before: SPACING.beforeHeading,
           after: SPACING.afterHeading,
@@ -352,7 +395,7 @@ function elementToParagraph(element: DocumentElement): Paragraph | null {
           }),
         ],
         heading: HeadingLevel.HEADING_2,
-        alignment: AlignmentType.LEFT,
+        alignment: getAlignment(),
         spacing: {
           before: SPACING.beforeHeading,
           after: SPACING.afterHeading,
@@ -367,6 +410,8 @@ function elementToParagraph(element: DocumentElement): Paragraph | null {
             font: FONTS.body,
             size: FONT_SIZES.body,
             color: COLORS.body,
+            bold: element.isBold,
+            italics: element.isItalic,
           }),
         ],
         bullet: {
@@ -391,6 +436,8 @@ function elementToParagraph(element: DocumentElement): Paragraph | null {
             font: FONTS.body,
             size: FONT_SIZES.body,
             color: COLORS.body,
+            bold: element.isBold,
+            italics: element.isItalic,
           }),
         ],
         numbering: {
@@ -421,7 +468,7 @@ function elementToParagraph(element: DocumentElement): Paragraph | null {
             italics: element.isItalic,
           }),
         ],
-        alignment: AlignmentType.LEFT,
+        alignment: getAlignment(),
         indent: element.indent
           ? { left: convertInchesToTwip(0.5 * element.indent) }
           : undefined,
@@ -431,6 +478,121 @@ function elementToParagraph(element: DocumentElement): Paragraph | null {
           line: SPACING.lineSpacing,
         },
       });
+  }
+}
+
+function createTableFromData(rows: string[][], hasHeader?: boolean): Table {
+  const tableRows = rows.map((rowData, rowIndex) => {
+    const isHeaderRow = rowIndex === 0 && hasHeader;
+    const isAlternateRow = !isHeaderRow && rowIndex % 2 === 1;
+
+    const cells = rowData.map((cellText) => {
+      return new TableCell({
+        children: [
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: cellText || '',
+                font: FONTS.body,
+                size: isHeaderRow ? FONT_SIZES.body : FONT_SIZES.small,
+                color: isHeaderRow ? COLORS.tableHeaderText : COLORS.body,
+                bold: isHeaderRow,
+              }),
+            ],
+            alignment: AlignmentType.LEFT,
+            spacing: {
+              before: 60,
+              after: 60,
+            },
+          }),
+        ],
+        shading: {
+          fill: isHeaderRow
+            ? COLORS.tableHeader
+            : isAlternateRow
+            ? COLORS.tableAltRow
+            : 'FFFFFF',
+        },
+        margins: {
+          top: convertInchesToTwip(0.05),
+          bottom: convertInchesToTwip(0.05),
+          left: convertInchesToTwip(0.1),
+          right: convertInchesToTwip(0.1),
+        },
+      });
+    });
+
+    return new TableRow({
+      children: cells,
+      tableHeader: isHeaderRow,
+    });
+  });
+
+  return new Table({
+    rows: tableRows,
+    width: {
+      size: 100,
+      type: WidthType.PERCENTAGE,
+    },
+    borders: {
+      top: { style: BorderStyle.SINGLE, size: 1, color: COLORS.tableBorder },
+      bottom: { style: BorderStyle.SINGLE, size: 1, color: COLORS.tableBorder },
+      left: { style: BorderStyle.SINGLE, size: 1, color: COLORS.tableBorder },
+      right: { style: BorderStyle.SINGLE, size: 1, color: COLORS.tableBorder },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: COLORS.tableBorder },
+      insideVertical: { style: BorderStyle.SINGLE, size: 1, color: COLORS.tableBorder },
+    },
+  });
+}
+
+async function createImageParagraph(imageData: {
+  data: string;
+  width: number;
+  height: number;
+  type: string;
+}): Promise<Paragraph | null> {
+  try {
+    // Decode base64 to buffer
+    const binaryString = atob(imageData.data);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    // Calculate dimensions (max width 6 inches, maintain aspect ratio)
+    const maxWidthInches = 6;
+    const maxWidthEmu = convertInchesToTwip(maxWidthInches) * 635; // Convert twips to EMU
+    const aspectRatio = imageData.height / imageData.width;
+
+    let widthEmu = imageData.width * 9525; // pixels to EMU (1 pixel = 9525 EMU)
+    let heightEmu = imageData.height * 9525;
+
+    // Scale down if too wide
+    if (widthEmu > maxWidthEmu) {
+      widthEmu = maxWidthEmu;
+      heightEmu = widthEmu * aspectRatio;
+    }
+
+    return new Paragraph({
+      children: [
+        new ImageRun({
+          data: bytes,
+          transformation: {
+            width: Math.round(widthEmu / 9525), // Convert back to pixels for docx
+            height: Math.round(heightEmu / 9525),
+          },
+          type: 'png',
+        }),
+      ],
+      alignment: AlignmentType.CENTER,
+      spacing: {
+        before: SPACING.beforeParagraph * 2,
+        after: SPACING.afterParagraph * 2,
+      },
+    });
+  } catch (error) {
+    console.warn('Failed to create image paragraph:', error);
+    return null;
   }
 }
 

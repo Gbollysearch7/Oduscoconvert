@@ -10,15 +10,30 @@ export interface TextItem {
 }
 
 export interface DocumentElement {
-  type: 'title' | 'heading' | 'subheading' | 'paragraph' | 'bullet' | 'numbered' | 'table-header' | 'table-cell' | 'whitespace';
+  type: 'title' | 'heading' | 'subheading' | 'paragraph' | 'bullet' | 'numbered' | 'table-header' | 'table-cell' | 'whitespace' | 'table' | 'image';
   content: string;
   page: number;
   level?: number; // For headings (1, 2, 3) and list items
   indent?: number; // Indentation level
   isBold?: boolean;
   isItalic?: boolean;
+  isUnderline?: boolean;
   fontSize?: number;
-  alignment?: 'left' | 'center' | 'right';
+  fontName?: string;
+  fontColor?: string;
+  alignment?: 'left' | 'center' | 'right' | 'justify';
+  // For table elements
+  tableData?: {
+    rows: string[][];
+    hasHeader?: boolean;
+  };
+  // For image elements
+  imageData?: {
+    data: string; // base64 encoded
+    width: number;
+    height: number;
+    type: string; // 'png', 'jpeg', etc.
+  };
 }
 
 export interface DocumentStructure {
@@ -33,6 +48,7 @@ export interface ExtractedTable {
   pageNumber: number;
   title?: string; // Table title if detected
   headers?: string[]; // Column headers
+  letterhead?: string[]; // Letterhead/header content before the table (each string is one row)
 }
 
 export interface ConversionResult {

@@ -169,6 +169,33 @@ function createContentCellStyle(isEven: boolean) {
   };
 }
 
+// Style for letterhead rows (amber/gold theme)
+function createLetterheadStyle() {
+  return {
+    font: {
+      bold: true,
+      sz: 11,
+      name: 'Calibri',
+      color: { rgb: '78350F' } // Dark amber text
+    },
+    fill: {
+      fgColor: { rgb: 'FEF3C7' }, // Light amber background
+      patternType: 'solid'
+    },
+    alignment: {
+      horizontal: 'left',
+      vertical: 'center',
+      wrapText: true
+    },
+    border: {
+      top: { style: 'thin', color: { rgb: 'FCD34D' } },
+      bottom: { style: 'thin', color: { rgb: 'FCD34D' } },
+      left: { style: 'thin', color: { rgb: 'FCD34D' } },
+      right: { style: 'thin', color: { rgb: 'FCD34D' } },
+    },
+  };
+}
+
 export function generateExcel(
   result: ConversionResult,
   fileName: string,
@@ -179,7 +206,7 @@ export function generateExcel(
   const workbook = XLSX.utils.book_new();
 
   if (result.mode === 'tables' && result.tables.length > 0) {
-    // Add each table as a separate sheet - direct 1:1 conversion, no extra rows
+    // Add each table as a separate sheet - with letterhead at top
     result.tables.forEach((table, index) => {
       onProgress?.(80 + Math.floor((index / result.tables.length) * 15), `Styling table ${index + 1}...`);
 
@@ -188,13 +215,27 @@ export function generateExcel(
       const metadata = hasMetadata ? enhancedTable.metadata : null;
       const hasHeader = metadata?.hasDetectedHeader ?? false;
 
+      // Get letterhead rows (if any)
+      const letterhead = table.letterhead || [];
+      const letterheadCount = letterhead.length;
+
       // Get the number of columns from the data
       const numCols = Math.max(...table.rows.map(r => r.length));
 
-      // Build sheet data - DIRECT conversion, no extra rows
+      // Build sheet data - letterhead first, then table data
       const sheetData: (string | number)[][] = [];
 
-      // Add table data directly - exactly as in the PDF
+      // Add letterhead rows first (each as a single cell spanning conceptually)
+      letterhead.forEach((text) => {
+        const row: string[] = [text];
+        // Fill remaining columns with empty strings
+        while (row.length < numCols) {
+          row.push('');
+        }
+        sheetData.push(row);
+      });
+
+      // Add table data
       table.rows.forEach((row) => {
         // Ensure each row has the same number of columns
         const normalizedRow = [...row];
@@ -207,10 +248,26 @@ export function generateExcel(
       const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
       const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
 
-      // Style data rows (starting from row 0 - no extra rows)
+      // Add merge cells for letterhead rows (span all columns)
+      const merges: XLSX.Range[] = [];
+      for (let i = 0; i < letterheadCount; i++) {
+        if (numCols > 1) {
+          merges.push({
+            s: { r: i, c: 0 },
+            e: { r: i, c: numCols - 1 }
+          });
+        }
+      }
+      if (merges.length > 0) {
+        worksheet['!merges'] = merges;
+      }
+
+      // Style all rows
       for (let row = 0; row <= range.e.r; row++) {
-        const isHeaderRow = row === 0 && hasHeader;
-        const isEvenDataRow = (row - (hasHeader ? 1 : 0)) % 2 === 0;
+        const isLetterheadRow = row < letterheadCount;
+        const dataRowIndex = row - letterheadCount;
+        const isTableHeaderRow = !isLetterheadRow && dataRowIndex === 0 && hasHeader;
+        const isEvenDataRow = !isLetterheadRow && (dataRowIndex - (hasHeader ? 1 : 0)) % 2 === 0;
 
         for (let col = 0; col < numCols; col++) {
           const cellRef = XLSX.utils.encode_cell({ r: row, c: col });
@@ -222,58 +279,69 @@ export function generateExcel(
             cell = worksheet[cellRef];
           }
 
-          const columnType = metadata?.columnTypes?.[col];
-
-          if (isHeaderRow) {
-            cell.s = createHeaderStyle(columnType);
+          if (isLetterheadRow) {
+            // Style letterhead rows
+            cell.s = createLetterheadStyle();
           } else {
-            cell.s = createDataCellStyle(isEvenDataRow, columnType);
+            const columnType = metadata?.columnTypes?.[col];
 
-            // Format currency ONLY if a currency symbol was actually detected in the PDF
-            if (columnType === 'currency') {
-              const currencySymbol = metadata?.columnCurrencySymbols?.[col];
+            if (isTableHeaderRow) {
+              cell.s = createHeaderStyle(columnType);
+            } else {
+              cell.s = createDataCellStyle(isEvenDataRow, columnType);
 
-              // Only apply currency formatting if a currency symbol was actually detected
-              if (currencySymbol) {
-                const value = cell.v;
-                if (typeof value === 'string' && value.trim()) {
-                  // Remove all currency symbols and formatting to get the numeric value
-                  const numValue = parseFloat(value.replace(/[₦$€£,\s]/g, ''));
-                  if (!isNaN(numValue)) {
-                    cell.v = numValue;
-                    cell.t = 'n';
+              // Format currency ONLY if a currency symbol was actually detected in the PDF
+              if (columnType === 'currency') {
+                const currencySymbol = metadata?.columnCurrencySymbols?.[col];
 
-                    // Apply the detected currency format
-                    if (currencySymbol === '₦') {
-                      cell.z = '₦#,##0.00'; // Naira format
-                    } else if (currencySymbol === '€') {
-                      cell.z = '€#,##0.00'; // Euro format
-                    } else if (currencySymbol === '£') {
-                      cell.z = '£#,##0.00'; // Pound format
-                    } else if (currencySymbol === '$') {
-                      cell.z = '$#,##0.00'; // Dollar format
+                // Only apply currency formatting if a currency symbol was actually detected
+                if (currencySymbol) {
+                  const value = cell.v;
+                  if (typeof value === 'string' && value.trim()) {
+                    // Remove all currency symbols and formatting to get the numeric value
+                    const numValue = parseFloat(value.replace(/[₦$€£,\s]/g, ''));
+                    if (!isNaN(numValue)) {
+                      cell.v = numValue;
+                      cell.t = 'n';
+
+                      // Apply the detected currency format
+                      if (currencySymbol === '₦') {
+                        cell.z = '₦#,##0.00'; // Naira format
+                      } else if (currencySymbol === '€') {
+                        cell.z = '€#,##0.00'; // Euro format
+                      } else if (currencySymbol === '£') {
+                        cell.z = '£#,##0.00'; // Pound format
+                      } else if (currencySymbol === '$') {
+                        cell.z = '$#,##0.00'; // Dollar format
+                      }
                     }
                   }
                 }
+                // If no currency symbol detected, leave the cell as-is (original text)
               }
-              // If no currency symbol detected, leave the cell as-is (original text)
+              // For regular numbers without currency symbols, leave them exactly as they appear
+              // Do NOT convert or add any formatting - preserve the original representation
             }
-            // For regular numbers without currency symbols, leave them exactly as they appear
-            // Do NOT convert or add any formatting - preserve the original representation
           }
         }
       }
 
-      // Calculate and set column widths based on actual data
-      const colWidths = calculateColumnWidths(table.rows);
+      // Calculate and set column widths based on actual data (including letterhead)
+      const allRows = [...letterhead.map(text => [text]), ...table.rows];
+      const colWidths = calculateColumnWidths(allRows as string[][]);
       worksheet['!cols'] = colWidths.map((w) => ({
-        wch: Math.min(Math.max(w + 4, 10), 50)
+        wch: Math.min(Math.max(w + 4, 10), 60) // Slightly wider max for letterhead
       }));
 
-      // Set row heights - only for header if detected
+      // Set row heights
       const rowHeights: XLSX.RowInfo[] = [];
-      if (hasHeader) {
-        rowHeights[0] = { hpt: 26 }; // Header row
+      // Letterhead rows
+      for (let i = 0; i < letterheadCount; i++) {
+        rowHeights[i] = { hpt: 22 }; // Letterhead row height
+      }
+      // Table header row
+      if (hasHeader && letterheadCount >= 0) {
+        rowHeights[letterheadCount] = { hpt: 26 }; // Header row after letterhead
       }
       worksheet['!rows'] = rowHeights;
 
